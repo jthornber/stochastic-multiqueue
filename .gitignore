@@ -1,0 +1,5 @@
+*~
+*.o
+smq
+*.d
+results.out
