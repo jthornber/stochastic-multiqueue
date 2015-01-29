@@ -168,10 +168,16 @@ namespace {
 	public:
 		multiqueue(unsigned nr_blocks, unsigned nr_levels)
 			: blocks_(nr_blocks),
-			  levels_(nr_levels) {
+			  levels_(nr_levels),
+			  hits_(0),
+			  misses_(0) {
 
 			for (auto &b : blocks_)
 				levels_[0].push_back(b);
+		}
+
+		bool in_cache(block const &b) {
+			return (b.level_ > (levels_.size() / 8) * 7);
 		}
 
 		void hit(unsigned bindex) {
@@ -180,9 +186,29 @@ namespace {
 				queue_level &l = levels_[b.level_];
 
 				b.hit_count_++;
+
+				if (in_cache(b))
+					hits_++;
+				else
+					misses_++;
+
 				l.erase(b);
 				l.push_back(b);
 			}
+		}
+
+		void clear_hits() {
+			for (auto & b : blocks_)
+				b.hit_count_ = 0;
+			hits_ = 0;
+			misses_ = 0;
+		}
+
+		vector<unsigned> level_populations() const {
+			vector<unsigned> r(levels_.size());
+			for (unsigned i = 0; i < levels_.size(); i++)
+				r[i] = levels_[i].count_;
+			return r;
 		}
 
 		struct hit_analysis {
@@ -231,6 +257,10 @@ namespace {
 			return r;
 		}
 
+		double get_hit_ratio() const {
+			return static_cast<double>(hits_) /
+				static_cast<double>(misses_);
+		}
 
 		void shuffle(unsigned adjustment = 1) {
 			unsigned nr_blocks = blocks_.size();
@@ -245,22 +275,26 @@ namespace {
 
 				unsigned target = 0;
 
-				if (l.count_ > target_per_level)
+				if (l.count_ > target_per_level + 4)
 					target = (l.count_ - target_per_level) / 4;
 
-				target += adjustment;
+				//if (l.count_ > target_per_level / 2)
+					target += adjustment;
 
 				// Promote
 				if (level < nr_levels - 1) {
 					if (level == 0)
 						target *= 2;
 
+					auto jump = max<unsigned>(1, target / target_per_level);
+					auto new_level = min(level + jump, nr_levels - 1);
+
 					for (unsigned count = 0; count < target && !l.empty(); count++) {
 						block &b = l.back();
 						l.pop_back();
 
-						b.level_ = level + 1;
-						promotes[level].push_front(b);
+						b.level_ = new_level;
+						promotes[new_level].push_front(b);
 					}
 				}
 
@@ -269,24 +303,34 @@ namespace {
 					if (level == nr_levels - 1)
 						target *= 2;
 
+					unsigned jump = max<unsigned>(1, target / target_per_level);
+					int new_level = jump > level ? 0 : level - jump;
+
 					for (unsigned count = 0; count < target && !l.empty(); count++) {
 						block &b = l.front();
 						l.pop_front();
 
-						b.level_ = level - 1;
-						demotes[level].push_back(b);
+						b.level_ = new_level;
+						demotes[new_level].push_back(b);
 					}
 				}
 			}
 
 			for (unsigned level = 0; level < nr_levels; level++) {
-				if (level < nr_levels - 1)
-					levels_[level + 1].splice_front(promotes[level]);
-
-				if (level > 0)
-					levels_[level - 1].splice_back(demotes[level]);
+				levels_[level].splice_front(promotes[level]);
+				levels_[level].splice_back(demotes[level]);
 			}
 		}
+#if 0
+		void shuffle_with_autotune() {
+			auto hit_ratio = get_hit_ratio();
+
+			// We don't know what the best achievable hit_ratio
+			// is for the current io profile, so how do we
+			// interpret this number?
+			shuffle();
+		}
+#endif
 
 	private:
 		// reverse order
@@ -296,6 +340,8 @@ namespace {
 
 		vector<block> blocks_;
 		vector<queue_level> levels_;
+		unsigned hits_;
+		unsigned misses_;
 	};
 
 	//--------------------------------
@@ -331,10 +377,32 @@ namespace {
 			out << v << "\n";
 	}
 
+	template <typename Generator>
+	void level_populations(Generator const &gen, ostream &out) {
+		unsigned const NR_BLOCKS = 8192;
+		unsigned const NR_GENERATIONS = 100;
+		unsigned const HITS_PER_GENERATION = 10000;
+
+		sampler s(NR_BLOCKS, gen);
+		multiqueue mq(NR_BLOCKS, 64);
+
+		for (unsigned generation = 0; generation < NR_GENERATIONS; generation++) {
+			for (unsigned hit = 0; hit < HITS_PER_GENERATION; hit++)
+				mq.hit(s.sample());
+			mq.shuffle();
+			mq.clear_hits();
+
+			for (auto const &p : mq.level_populations())
+				out << p << " ";
+			out << "\n";
+		}
+	}
+
+
 	// Runs several mqs in parallel with the same sampler and produces
 	// hit analyses for them vs generation
 	template <typename Generator>
-	void compare_nr_levels(Generator const &gen, unsigned percent, ostream &out) {
+	void ha_vs_levels(Generator const &gen, unsigned percent, ostream &out) {
 		unsigned const NR_BLOCKS = 8192;
 		unsigned const NR_GENERATIONS = 100;
 		unsigned const HITS_PER_GENERATION = 10000;
@@ -363,12 +431,84 @@ namespace {
 			for (auto &mq : mqs) {
 				auto stats = mq->get_hit_analysis(percent);
 				out << " "
-				    << static_cast<float>(stats.hits_in_levels_) /
-				       static_cast<float>(stats.hits_actual_);
+				    << static_cast<double>(stats.hits_in_levels_) /
+				       static_cast<double>(stats.hits_actual_);
 			}
+			out << "\n";
+
+			for (auto &mq : mqs)
+				mq->clear_hits();
+		}
+	}
+
+	template <typename Generator>
+	void ha_vs_percent(Generator const &gen, ostream &out) {
+		unsigned const NR_BLOCKS = 8192;
+		unsigned const NR_GENERATIONS = 100;
+		unsigned const HITS_PER_GENERATION = 10000;
+
+		sampler s(NR_BLOCKS, gen);
+		multiqueue mq(NR_BLOCKS, 64);
+
+		for (unsigned generation = 0; generation < NR_GENERATIONS; generation++) {
+			for (unsigned hit = 0; hit < HITS_PER_GENERATION; hit++)
+				mq.hit(s.sample());
+			mq.shuffle();
+			mq.clear_hits();
+		}
+
+		for (unsigned percent = 0; percent < 101; percent++) {
+			auto stats = mq.get_hit_analysis(percent);
+			out << static_cast<double>(stats.hits_in_levels_) /
+				static_cast<double>(stats.hits_actual_) << "\n";
+		}
+	}
+
+	template <typename Generator1, typename Generator2>
+	void ha_with_changing_pdf_vs_adjustments(Generator1 const &gen1, Generator2 const &gen2, ostream &out) {
+		unsigned const NR_BLOCKS = 8192;
+		unsigned const NR_GENERATIONS = 50;
+		unsigned const HITS_PER_GENERATION = 10000;
+
+		sampler s1(NR_BLOCKS, gen1);
+		sampler s2(NR_BLOCKS, gen2);
+
+		list<unique_ptr<multiqueue>> mqs;
+		for (unsigned i = 0; i < 6; i++)
+			mqs.push_back(
+				unique_ptr<multiqueue>(
+					new multiqueue(NR_BLOCKS, 64)));
+
+		for (unsigned generation = 0; generation < NR_GENERATIONS * 100; generation++) {
+			auto &cs = ((generation / NR_GENERATIONS) & 1) ? s1 : s2;
+			for (unsigned hit = 0; hit < HITS_PER_GENERATION; hit++) {
+				auto v = cs.sample();
+				for (auto &mq : mqs)
+					mq->hit(v);
+			}
+
+			out << generation;
+
+			unsigned i = 0;
+			for (auto &mq : mqs) {
+				mq->shuffle(1 << i++);
+
+#if 0
+				auto stats = mq->get_hit_analysis(10);
+				out << " "
+				    << static_cast<double>(stats.hits_in_levels_) /
+					static_cast<double>(stats.hits_actual_);
+#else
+				out << " " << mq->get_hit_ratio();
+#endif
+
+				mq->clear_hits();
+			}
+
 			out << "\n";
 		}
 	}
+
 
 	// Runs several mqs in parallel with the same sampler and outputs
 	// hit vs position
@@ -394,7 +534,7 @@ namespace {
 			}
 
 			for (auto &mq : mqs)
-				mq->shuffle();
+				mq->shuffle(32);
 		}
 
 		vector<vector<unsigned>> hits(mqs.size());
@@ -434,6 +574,7 @@ namespace {
 			auto adjustment = 1u;
 			for (auto &mq : mqs) {
 				mq->shuffle(adjustment);
+				mq->clear_hits();
 				adjustment *= 2;
 			}
 		}
@@ -472,6 +613,15 @@ int main(int argc, char **argv)
 		return r;
 	};
 
+	auto gen2 = [](double alpha) {
+		auto r = gaussian_pdf(0.6, 0.02, alpha) +
+		gaussian_pdf(0.3, 0.05, alpha) +
+		0.5 * gaussian_pdf(0.8, 0.1, alpha) +
+		0.01 * constant_pdf(alpha);
+
+		return r;
+	};
+
 	with_file("pdf.dat",
 		  [gen](ostream &out) {
 			  show_pdf(gen, out);
@@ -480,6 +630,11 @@ int main(int argc, char **argv)
 	with_file("summation_table.dat",
 		  [gen](ostream &out) {
 			  show_summation(gen, out);
+		  });
+
+	with_file("level_population.dat",
+		  [gen](ostream &out) {
+			  level_populations(gen, out);
 		  });
 
 	with_file("hits_vs_levels.dat",
@@ -492,11 +647,21 @@ int main(int argc, char **argv)
 			  hits_vs_adjustments(gen, out);
 		  });
 
-
-	with_file("compare_nr_levels.dat",
+	with_file("ha_vs_levels.dat",
 		  [gen](ostream &out) {
-			  compare_nr_levels(gen, 10, out);
+			  ha_vs_levels(gen, 10, out);
 		  });
+
+	with_file("ha_vs_percent.dat",
+		  [gen](ostream &out) {
+			  ha_vs_percent(gen, out);
+		  });
+
+	with_file("ha_with_changing_pdf_vs_adjustments.dat",
+		  [gen, gen2](ostream &out) {
+                          ha_with_changing_pdf_vs_adjustments(gen, gen2, out);
+		  });
+
 	return 0;
 }
 
