@@ -260,8 +260,6 @@ namespace {
 			unsigned nr_levels = levels_.size();
 			unsigned target_per_level = nr_blocks / nr_levels;
 
-			autotune_overfull_ = false;
-
 			// Promote a few blocks
 			queue_level promotes[nr_levels], demotes[nr_levels];
 
@@ -279,8 +277,6 @@ namespace {
 						target *= 2;
 
 					auto jump = max<unsigned>(1, target / target_per_level);
-					if (jump > 1)
-						autotune_overfull_ = true;
 					auto new_level = min(level + jump, nr_levels - 1);
 
 					for (unsigned count = 0; count < target && !l.empty(); count++) {
@@ -298,8 +294,6 @@ namespace {
 						target *= 2;
 
 					unsigned jump = max<unsigned>(1, target / target_per_level);
-					if (jump > 1)
-						autotune_overfull_ = true;
 					int new_level = jump > level ? 0 : level - jump;
 
 					for (unsigned count = 0; count < target && !l.empty(); count++) {
@@ -321,24 +315,24 @@ namespace {
 			misses_ = 0;
 		}
 
-		void shuffle_with_autotune() {
-			// auto hit_ratio = get_hit_ratio();
+		unsigned get_autotune_adjustment() const {
+			unsigned max_adjustment = (blocks_.size() / levels_.size()) / 4;
 
-			// We don't know what the best achievable hit_ratio
-			// is for the current io profile, so how do we
-			// interpret this number?
-			if (autotune_overfull_)
-				shuffle(blocks_.size() / (levels_.size() * 8));
-			else
-				shuffle();
+			auto miss_ratio = static_cast<double>(misses_) /
+				static_cast<double>(hits_);
+
+			// FIXME: we need to push cache/origin size in here somehow
+			miss_ratio = ((miss_ratio - 1.0) * 4.0) + 1.0;
+			miss_ratio = min<double>(miss_ratio, static_cast<double>(max_adjustment));
+			miss_ratio = max<double>(miss_ratio, 1.0);
+			return floor(miss_ratio);
+		}
+
+		void shuffle_with_autotune() {
+			shuffle(get_autotune_adjustment());
 		}
 
 	private:
-		double get_hit_ratio() const {
-			return static_cast<double>(hits_) /
-				static_cast<double>(misses_);
-		}
-
 		static bool cmp_block_high_to_low(block const *lhs, block const *rhs) {
 			return lhs->hit_count_ > rhs->hit_count_;
 		}
@@ -347,7 +341,6 @@ namespace {
 		vector<queue_level> levels_;
 		unsigned hits_;
 		unsigned misses_;
-		bool autotune_overfull_;
 	};
 
 	//--------------------------------
@@ -502,19 +495,45 @@ namespace {
 			for (auto &mq : mqs) {
 				mq->shuffle(1 << i++);
 
-#if 1
 				auto stats = mq->get_hit_analysis(10);
 				out << " "
 				    << static_cast<double>(stats.hits_in_levels_) /
 					static_cast<double>(stats.hits_actual_);
-#else
-				out << " " << mq->get_hit_ratio();
-#endif
 
 				mq->clear_hits();
 			}
 
 			out << "\n";
+		}
+	}
+
+	template <typename Generator1, typename Generator2>
+	void ha_with_changing_pdf_and_autotune(Generator1 const &gen1, Generator2 const &gen2, ostream &out) {
+		unsigned const NR_BLOCKS = 8192;
+		unsigned const NR_GENERATIONS = 50;
+		unsigned const HITS_PER_GENERATION = 10000;
+
+		sampler s1(NR_BLOCKS, gen1);
+		sampler s2(NR_BLOCKS, gen2);
+		multiqueue mq(NR_BLOCKS, 64);
+
+		for (unsigned generation = 0; generation < NR_GENERATIONS * 6; generation++) {
+			auto &cs = ((generation / NR_GENERATIONS) & 1) ? s1 : s2;
+			for (unsigned hit = 0; hit < HITS_PER_GENERATION; hit++)
+				mq.hit(cs.sample());
+
+			auto adjustment = mq.get_autotune_adjustment(); // gets zeroed by shuffle, so we have to get early
+			mq.shuffle_with_autotune();
+
+			out << generation;
+
+			auto stats = mq.get_hit_analysis(10);
+			out << " "
+			    << static_cast<double>(stats.hits_in_levels_) /
+				static_cast<double>(stats.hits_actual_)
+			    << " " << adjustment << "\n";
+
+			mq.clear_hits();
 		}
 	}
 
@@ -543,7 +562,7 @@ namespace {
 			}
 
 			for (auto &mq : mqs)
-				mq->shuffle(32);
+				mq->shuffle_with_autotune();
 		}
 
 		vector<vector<unsigned>> hits(mqs.size());
@@ -669,6 +688,11 @@ int main(int argc, char **argv)
 	with_file("ha_with_changing_pdf_vs_adjustments.dat",
 		  [gen, gen2](ostream &out) {
                           ha_with_changing_pdf_vs_adjustments(gen, gen2, out);
+		  });
+
+	with_file("ha_with_changing_pdf_and_autotune.dat",
+		  [gen, gen2](ostream &out) {
+                          ha_with_changing_pdf_and_autotune(gen, gen2, out);
 		  });
 
 	return 0;
