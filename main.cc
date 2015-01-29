@@ -200,8 +200,6 @@ namespace {
 		void clear_hits() {
 			for (auto & b : blocks_)
 				b.hit_count_ = 0;
-			hits_ = 0;
-			misses_ = 0;
 		}
 
 		vector<unsigned> level_populations() const {
@@ -257,15 +255,12 @@ namespace {
 			return r;
 		}
 
-		double get_hit_ratio() const {
-			return static_cast<double>(hits_) /
-				static_cast<double>(misses_);
-		}
-
 		void shuffle(unsigned adjustment = 1) {
 			unsigned nr_blocks = blocks_.size();
 			unsigned nr_levels = levels_.size();
 			unsigned target_per_level = nr_blocks / nr_levels;
+
+			autotune_overfull_ = false;
 
 			// Promote a few blocks
 			queue_level promotes[nr_levels], demotes[nr_levels];
@@ -274,12 +269,9 @@ namespace {
 				queue_level &l = levels_[level];
 
 				unsigned target = 0;
-
 				if (l.count_ > target_per_level + 4)
 					target = (l.count_ - target_per_level) / 4;
-
-				//if (l.count_ > target_per_level / 2)
-					target += adjustment;
+				target += adjustment;
 
 				// Promote
 				if (level < nr_levels - 1) {
@@ -287,6 +279,8 @@ namespace {
 						target *= 2;
 
 					auto jump = max<unsigned>(1, target / target_per_level);
+					if (jump > 1)
+						autotune_overfull_ = true;
 					auto new_level = min(level + jump, nr_levels - 1);
 
 					for (unsigned count = 0; count < target && !l.empty(); count++) {
@@ -304,6 +298,8 @@ namespace {
 						target *= 2;
 
 					unsigned jump = max<unsigned>(1, target / target_per_level);
+					if (jump > 1)
+						autotune_overfull_ = true;
 					int new_level = jump > level ? 0 : level - jump;
 
 					for (unsigned count = 0; count < target && !l.empty(); count++) {
@@ -320,20 +316,29 @@ namespace {
 				levels_[level].splice_front(promotes[level]);
 				levels_[level].splice_back(demotes[level]);
 			}
+
+			hits_ = 0;
+			misses_ = 0;
 		}
-#if 0
+
 		void shuffle_with_autotune() {
-			auto hit_ratio = get_hit_ratio();
+			// auto hit_ratio = get_hit_ratio();
 
 			// We don't know what the best achievable hit_ratio
 			// is for the current io profile, so how do we
 			// interpret this number?
-			shuffle();
+			if (autotune_overfull_)
+				shuffle(blocks_.size() / (levels_.size() * 8));
+			else
+				shuffle();
 		}
-#endif
 
 	private:
-		// reverse order
+		double get_hit_ratio() const {
+			return static_cast<double>(hits_) /
+				static_cast<double>(misses_);
+		}
+
 		static bool cmp_block_high_to_low(block const *lhs, block const *rhs) {
 			return lhs->hit_count_ > rhs->hit_count_;
 		}
@@ -342,6 +347,7 @@ namespace {
 		vector<queue_level> levels_;
 		unsigned hits_;
 		unsigned misses_;
+		bool autotune_overfull_;
 	};
 
 	//--------------------------------
@@ -361,12 +367,15 @@ namespace {
 		return k * exp(power);
 	}
 
-	template <typename Generator>
-	void show_pdf(Generator const &gen, ostream &out) {
-		sampler s(8192, gen);
-		auto pdf = s.get_pdf();
-		for (auto const &v : pdf)
-			out << v << "\n";
+	template <typename Generator1, typename Generator2>
+	void show_pdf(Generator1 const &gen1, Generator2 const &gen2, ostream &out) {
+		sampler s1(8192, gen1);
+		sampler s2(8192, gen2);
+		auto pdf1 = s1.get_pdf();
+		auto pdf2 = s2.get_pdf();
+
+		for (unsigned i = 0; i < pdf1.size(); i++)
+			out << pdf1[i] << " " << pdf2[i] << "\n";
 	}
 
 	template <typename Generator>
@@ -493,7 +502,7 @@ namespace {
 			for (auto &mq : mqs) {
 				mq->shuffle(1 << i++);
 
-#if 0
+#if 1
 				auto stats = mq->get_hit_analysis(10);
 				out << " "
 				    << static_cast<double>(stats.hits_in_levels_) /
@@ -614,17 +623,17 @@ int main(int argc, char **argv)
 	};
 
 	auto gen2 = [](double alpha) {
-		auto r = gaussian_pdf(0.6, 0.02, alpha) +
+		auto r = 0.3 * gaussian_pdf(0.6, 0.02, alpha) +
 		gaussian_pdf(0.3, 0.05, alpha) +
-		0.5 * gaussian_pdf(0.8, 0.1, alpha) +
+		0.1 * gaussian_pdf(0.8, 0.1, alpha) +
 		0.01 * constant_pdf(alpha);
 
 		return r;
 	};
 
 	with_file("pdf.dat",
-		  [gen](ostream &out) {
-			  show_pdf(gen, out);
+		  [gen, gen2](ostream &out) {
+			  show_pdf(gen, gen2, out);
 		  });
 
 	with_file("summation_table.dat",
