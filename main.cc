@@ -1,7 +1,10 @@
 #include <algorithm>
 #include <boost/math/constants/constants.hpp>
 #include <boost/intrusive/list.hpp>
+#include <fstream>
 #include <iostream>
+#include <list>
+#include <memory>
 #include <random>
 #include <vector>
 
@@ -11,6 +14,80 @@ namespace bi = boost::intrusive;
 //----------------------------------------------------------------
 
 namespace {
+	// Generator should be a functor that returns the sample count for a
+	// particular bin.
+	class sampler {
+	public:
+		template <typename Generator>
+		sampler(unsigned nr_bins, Generator const &gen)
+			: rng_(rd_()),
+			  uniform_(0.0, 1.0),
+			  pdf_(nr_bins),
+			  summation_(nr_bins) {
+
+			calc_pdf(gen);
+			normalise_pdf();
+			calc_summation();
+		}
+
+		unsigned sample() {
+			auto r = uniform_(rng_);
+			auto p = lower_bound(summation_.cbegin(), summation_.cend(), r);
+			auto index = static_cast<unsigned>(p - summation_.cbegin());
+
+			if (index >= summation_.size())
+				--index;
+
+			return index;
+		}
+
+		vector<double> const &get_pdf() const {
+			return pdf_;
+		}
+
+		vector<double> const &get_summation() const {
+			return summation_;
+		}
+
+	private:
+		template <typename Generator>
+		void calc_pdf(Generator &gen) {
+			auto nr_bins = pdf_.size();
+
+			for (unsigned i = 0; i < nr_bins; i++) {
+				auto alpha = static_cast<double>(i) / static_cast<double>(nr_bins);
+				pdf_[i] = gen(alpha);
+			}
+		}
+
+		void normalise_pdf() {
+			auto total = 0.0;
+
+			for (auto const &v : pdf_)
+				total += v;
+
+			if (total > 0.00001)
+				for (auto &v : pdf_)
+					v /= total;
+		}
+
+		void calc_summation() {
+			auto total = 0.0;
+			for (unsigned i = 0; i < summation_.size(); i++) {
+				total += pdf_[i];
+				summation_[i] = total;
+			}
+		}
+
+		random_device rd_;
+		mt19937 rng_;
+		uniform_real_distribution<double> uniform_;
+		vector<double> pdf_;
+		vector<double> summation_;
+	};
+
+	//--------------------------------
+
 	struct block {
 		block()
 			: level_(0),
@@ -89,108 +166,18 @@ namespace {
 
 	class multiqueue {
 	public:
-		multiqueue(unsigned nr_levels)
-			: levels_(nr_levels) {
+		multiqueue(unsigned nr_blocks, unsigned nr_levels)
+			: blocks_(nr_blocks),
+			  levels_(nr_levels) {
+
+			for (auto &b : blocks_)
+				levels_[0].push_back(b);
 		}
 
-		vector<queue_level> levels_;
-	};
-
-	//--------------------------------
-
-	void uniform_pdf(float *array, unsigned nr) {
-		float v = 1.0 / nr;
-		for (unsigned i = 0; i < nr; i++)
-			array[i] = v;
-	}
-
-	void normal_pdf(float *array, unsigned nr, float mean, float deviation) {
-		const double pi = boost::math::constants::pi<float>();
-
-		for (unsigned i = 0; i < nr; i++) {
-			float x = (float) i;
-
-			float power = - ((x - mean) * (x - mean)) / (2.0 * deviation * deviation);
-			float k = 1.0 / (deviation * sqrt(2.0 * pi));
-			array[i] = k * exp(power);
-		}
-	}
-
-	void normalise_pdf(float *array, unsigned nr) {
-		float total = 0.0f;
-
-		for (unsigned i = 0; i < nr; i++)
-			total += array[i];
-		total /= nr;
-
-		if (total > 0.00001)
-			for (unsigned i = 0; i < nr; i++)
-				array[i] /= total;
-	}
-
-	void calc_summation_table(float *pdf, unsigned nr, float *table) {
-		float sum = 0.0;
-
-		for (unsigned i = 0; i < nr; i++) {
-			sum += pdf[i];
-			table[i] = sum;
-		}
-	}
-
-	template <typename T>
-	T blend(T v1, T v2, float alpha) {
-		if (v1 < v2) {
-			T range = v2 - v1;
-			return static_cast<T>(alpha * static_cast<float>(range));
-		} else {
-			T range = v1 - v2;
-			return static_cast<T>((1.0 - alpha) * static_cast<float>(range));
-		}
-	}
-
-	// reverse order
-	bool cmp_block_ptr(block *lhs, block *rhs) {
-		return lhs->hit_count_ > rhs->hit_count_;
-	}
-}
-
-//----------------------------------------------------------------
-
-int main(int argc, char **argv)
-{
-	unsigned const NR_LEVELS = 128;
-	unsigned const NR_BLOCKS = 8192;
-	unsigned const NR_GENERATIONS = 1000;
-	unsigned const HITS_PER_GENERATION = 10000;
-
-	float pdf[NR_BLOCKS];
-	// uniform_pdf(pdf, NR_BLOCKS);
-	normal_pdf(pdf, NR_BLOCKS, NR_BLOCKS / 2, 1000.0);
-
-	float sigma[NR_BLOCKS];
-	calc_summation_table(pdf, NR_BLOCKS, sigma);
-
-	vector<block> blocks(NR_BLOCKS);
-	multiqueue mq(NR_LEVELS);
-
-	for (unsigned i = 0; i < blocks.size(); i++)
-		mq.levels_[0].push_back(blocks[i]);
-
-	random_device rd;
-	mt19937 rng(rd());
-	uniform_real_distribution<float> u(0.0, 1.0);
-
-	cout << "generation 10_percent_hits_over_ideal_10_percent_hits\n";
-
-	for (unsigned generation = 0; generation < NR_GENERATIONS; generation++) {
-		for (unsigned hit = 0; hit < HITS_PER_GENERATION; hit++) {
-			float v = u(rng);
-			float *pos = lower_bound(sigma, sigma + NR_BLOCKS, v);
-			unsigned bindex = pos - sigma;
-
-			if (bindex < blocks.size()) {
-				block &b = blocks[pos - sigma];
-				queue_level &l = mq.levels_[b.level_];
+		void hit(unsigned bindex) {
+			if (bindex < blocks_.size()) {
+				block &b = blocks_[bindex];
+				queue_level &l = levels_[b.level_];
 
 				b.hit_count_++;
 				l.erase(b);
@@ -198,104 +185,320 @@ int main(int argc, char **argv)
 			}
 		}
 
-		unsigned target_per_level = NR_BLOCKS / NR_LEVELS;
+		struct hit_analysis {
+			unsigned top_percent_;
+			unsigned hits_in_levels_;
+			unsigned hits_actual_;
+		};
 
-		// Promote a few blocks
-		queue_level promotes[NR_LEVELS], demotes[NR_LEVELS];
+		hit_analysis get_hit_analysis(unsigned top_percent) const {
+			hit_analysis r;
+			r.top_percent_ = top_percent;
+			r.hits_in_levels_ = 0;
+			r.hits_actual_ = 0;
 
-		for (unsigned level = 0; level < NR_LEVELS; level++) {
-			queue_level &l = mq.levels_[level];
 
-			unsigned target = 0;
+			unsigned target = (blocks_.size() * top_percent) / 100u;
 
-			if (l.count_ > target_per_level)
-				target = (l.count_ - target_per_level) / 4;
+			for (unsigned level = levels_.size(); level; --level) {
+				queue_level const &l = levels_[level - 1];
 
-#if 0
-			unsigned velocity = 1.0 - (static_cast<float>(min<unsigned>(generation, 200u)) / 200.0);
-			target += blend(32u, 4u, velocity);
-#else
-			target += 8u;
-#endif
+				for (auto it = l.list_.rbegin(); target > 0 && it != l.list_.rend(); ++it, --target)
+					r.hits_in_levels_ += it->hit_count_;
+			}
 
-			// Promote
-			if (level < NR_LEVELS - 1) {
-				if (level == 0)
-					target *= 2;
+			vector<block const *> sorted(blocks_.size());
+			for (unsigned i = 0; i < blocks_.size(); i++)
+				sorted[i] = &blocks_[i];
+			sort(sorted.begin(), sorted.end(), cmp_block_high_to_low);
 
-				for (unsigned count = 0; count < target && !l.empty(); count++) {
-					block &b = l.back();
-					l.pop_back();
+			target = (blocks_.size() * top_percent) / 100u;
+			for (unsigned i = 0; i < target; i++)
+				r.hits_actual_ += sorted[i]->hit_count_;
 
-					b.level_ = level + 1;
-					promotes[level].push_front(b);
+			return r;
+		}
+
+		vector<unsigned> get_hits() const {
+			vector<unsigned> r(blocks_.size());
+
+			auto index = 0u;
+			for (auto const &l : levels_) {
+				for (auto it = l.list_.cbegin(); it != l.list_.cend(); ++it)
+					r[index++] = it->hit_count_;
+			}
+
+			return r;
+		}
+
+
+		void shuffle(unsigned adjustment = 1) {
+			unsigned nr_blocks = blocks_.size();
+			unsigned nr_levels = levels_.size();
+			unsigned target_per_level = nr_blocks / nr_levels;
+
+			// Promote a few blocks
+			queue_level promotes[nr_levels], demotes[nr_levels];
+
+			for (unsigned level = 0; level < nr_levels; level++) {
+				queue_level &l = levels_[level];
+
+				unsigned target = 0;
+
+				if (l.count_ > target_per_level)
+					target = (l.count_ - target_per_level) / 4;
+
+				target += adjustment;
+
+				// Promote
+				if (level < nr_levels - 1) {
+					if (level == 0)
+						target *= 2;
+
+					for (unsigned count = 0; count < target && !l.empty(); count++) {
+						block &b = l.back();
+						l.pop_back();
+
+						b.level_ = level + 1;
+						promotes[level].push_front(b);
+					}
+				}
+
+				// demote
+				if (level > 0) {
+					if (level == nr_levels - 1)
+						target *= 2;
+
+					for (unsigned count = 0; count < target && !l.empty(); count++) {
+						block &b = l.front();
+						l.pop_front();
+
+						b.level_ = level - 1;
+						demotes[level].push_back(b);
+					}
 				}
 			}
 
-			// demote
-			if (level > 0) {
-				if (level == NR_LEVELS - 1)
-					target *= 2;
+			for (unsigned level = 0; level < nr_levels; level++) {
+				if (level < nr_levels - 1)
+					levels_[level + 1].splice_front(promotes[level]);
 
-				for (unsigned count = 0; count < target && !l.empty(); count++) {
-					block &b = l.front();
-					l.pop_front();
-
-					b.level_ = level - 1;
-					demotes[level].push_back(b);
-				}
+				if (level > 0)
+					levels_[level - 1].splice_back(demotes[level]);
 			}
 		}
 
-		for (unsigned level = 0; level < NR_LEVELS; level++) {
-			if (level < NR_LEVELS - 1)
-				mq.levels_[level + 1].splice_front(promotes[level]);
-
-			if (level > 0)
-				mq.levels_[level - 1].splice_back(demotes[level]);
+	private:
+		// reverse order
+		static bool cmp_block_high_to_low(block const *lhs, block const *rhs) {
+			return lhs->hit_count_ > rhs->hit_count_;
 		}
 
-		// Print stats
-		vector<block *> sorted(NR_BLOCKS);
-		unsigned i = 0;
-		for (unsigned level = NR_LEVELS; level; --level) {
-			queue_level &l = mq.levels_[level - 1];
+		vector<block> blocks_;
+		vector<queue_level> levels_;
+	};
 
-			for (auto it = l.list_.rbegin(); it != l.list_.rend(); ++it)
-				sorted[i++] = &(*it);
-		}
+	//--------------------------------
 
-		unsigned actual_total_hits = 0;
-		for (unsigned i = 0; i < NR_BLOCKS / 10; i++)
-			actual_total_hits += sorted[i]->hit_count_;
+	// The pdf functions are passed a value between 0.0 and 1.0.  They
+	// should integrate over that range to 1.
 
-		for (unsigned i = 0; i < NR_BLOCKS; i++)
-			sorted[i] = &blocks[i];
-		sort(sorted.begin(), sorted.end(), cmp_block_ptr);
-
-		unsigned ten_pc_total_hits = 0;
-		for (unsigned i = 0; i < NR_BLOCKS / 10; i++)
-			ten_pc_total_hits += sorted[i]->hit_count_;
-		cout << generation << " "
-		     << static_cast<float>(actual_total_hits) / static_cast<float>(ten_pc_total_hits)
-		     << "\n";
+	double constant_pdf(double alpha) {
+		return 1.0;
 	}
 
-#if 0
-	cout << "block hit_count\n";
-	for (unsigned level = 0; level < NR_LEVELS; level++) {
-		for (auto it = lru[level].list_.begin(); it != lru[level].list_.end(); ++it) {
-			unsigned bindex = &(*it) - &blocks[0];
-			cout << bindex << " " << it->hit_count_ << " " << it->level_ << "\n";
+	double gaussian_pdf(double mean, double deviation, double alpha) {
+		auto const pi = boost::math::constants::pi<double>();
+
+		auto power = - ((alpha - mean) * (alpha - mean)) / (2.0 * deviation * deviation);
+		auto k = 1.0 / (deviation * sqrt(2.0 * pi));
+		return k * exp(power);
+	}
+
+	template <typename Generator>
+	void show_pdf(Generator const &gen, ostream &out) {
+		sampler s(8192, gen);
+		auto pdf = s.get_pdf();
+		for (auto const &v : pdf)
+			out << v << "\n";
+	}
+
+	template <typename Generator>
+	void show_summation(Generator const &gen, ostream &out) {
+		sampler s(8192, gen);
+		auto pdf = s.get_summation();
+		for (auto const &v : pdf)
+			out << v << "\n";
+	}
+
+	// Runs several mqs in parallel with the same sampler and produces
+	// hit analyses for them vs generation
+	template <typename Generator>
+	void compare_nr_levels(Generator const &gen, unsigned percent, ostream &out) {
+		unsigned const NR_BLOCKS = 8192;
+		unsigned const NR_GENERATIONS = 100;
+		unsigned const HITS_PER_GENERATION = 10000;
+
+		sampler s(NR_BLOCKS, gen);
+		list<unique_ptr<multiqueue>> mqs;
+
+		for (unsigned i = 0; i < 8; i++)
+			mqs.push_back(
+				unique_ptr<multiqueue>(
+					new multiqueue(NR_BLOCKS, 1 << i)));
+
+		for (unsigned generation = 0; generation < NR_GENERATIONS; generation++) {
+
+			for (unsigned hit = 0; hit < HITS_PER_GENERATION; hit++) {
+				auto v = s.sample();
+				for (auto &mq : mqs)
+					mq->hit(v);
+			}
+
+			for (auto &mq : mqs)
+				mq->shuffle();
+
+			// Print stats
+			out << generation;
+			for (auto &mq : mqs) {
+				auto stats = mq->get_hit_analysis(percent);
+				out << " "
+				    << static_cast<float>(stats.hits_in_levels_) /
+				       static_cast<float>(stats.hits_actual_);
+			}
+			out << "\n";
+		}
+	}
+
+	// Runs several mqs in parallel with the same sampler and outputs
+	// hit vs position
+	template <typename Generator>
+	void hits_vs_levels(Generator const &gen, ostream &out) {
+		unsigned const NR_BLOCKS = 8192;
+		unsigned const NR_GENERATIONS = 100;
+		unsigned const HITS_PER_GENERATION = 10000;
+
+		sampler s(NR_BLOCKS, gen);
+		list<unique_ptr<multiqueue>> mqs;
+
+		for (unsigned i = 0; i < 8; i++)
+			mqs.push_back(
+				unique_ptr<multiqueue>(
+					new multiqueue(NR_BLOCKS, 1 << i)));
+
+		for (unsigned generation = 0; generation < NR_GENERATIONS; generation++) {
+			for (unsigned hit = 0; hit < HITS_PER_GENERATION; hit++) {
+				auto v = s.sample();
+				for (auto &mq : mqs)
+					mq->hit(v);
+			}
+
+			for (auto &mq : mqs)
+				mq->shuffle();
 		}
 
-		cerr << "level " << level << ": " << lru[level].count_ << "\n";
+		vector<vector<unsigned>> hits(mqs.size());
+		auto count = 0u;
+		for (auto const &mq : mqs)
+			hits[count++] = mq->get_hits();
+
+		for (unsigned b = 0; b < NR_BLOCKS; b++) {
+			out << b;
+			for (unsigned q = 0; q < mqs.size(); q++)
+				out << " " << hits[q][b];
+			out << "\n";
+		}
 	}
-#endif
+
+	template <typename Generator>
+	void hits_vs_adjustments(Generator const &gen, ostream &out) {
+		unsigned const NR_BLOCKS = 8192;
+		unsigned const NR_GENERATIONS = 100;
+		unsigned const HITS_PER_GENERATION = 10000;
+
+		sampler s(NR_BLOCKS, gen);
+		list<unique_ptr<multiqueue>> mqs;
+
+		for (unsigned i = 0; i < 4; i++)
+			mqs.push_back(
+				unique_ptr<multiqueue>(
+					new multiqueue(NR_BLOCKS, 64)));
+
+		for (unsigned generation = 0; generation < NR_GENERATIONS; generation++) {
+			for (unsigned hit = 0; hit < HITS_PER_GENERATION; hit++) {
+				auto v = s.sample();
+				for (auto &mq : mqs)
+					mq->hit(v);
+			}
+
+			auto adjustment = 1u;
+			for (auto &mq : mqs) {
+				mq->shuffle(adjustment);
+				adjustment *= 2;
+			}
+		}
+
+		vector<vector<unsigned>> hits(mqs.size());
+		auto count = 0u;
+		for (auto const &mq : mqs)
+			hits[count++] = mq->get_hits();
+
+		for (unsigned b = 0; b < NR_BLOCKS; b++) {
+			out << b;
+			for (unsigned q = 0; q < mqs.size(); q++)
+				out << " " << hits[q][b];
+			out << "\n";
+		}
+	}
 
 
+	template <typename Fn>
+	void with_file(string const &path, Fn f) {
+		ofstream out(path);
+		f(out);
+	}
+}
 
+//----------------------------------------------------------------
+
+int main(int argc, char **argv)
+{
+	auto gen = [](double alpha) {
+		auto r = gaussian_pdf(0.5, 0.02, alpha) +
+		gaussian_pdf(0.1, 0.05, alpha) +
+		gaussian_pdf(0.8, 0.1, alpha) +
+		0.01 * constant_pdf(alpha);
+
+		return r;
+	};
+
+	with_file("pdf.dat",
+		  [gen](ostream &out) {
+			  show_pdf(gen, out);
+		  });
+
+	with_file("summation_table.dat",
+		  [gen](ostream &out) {
+			  show_summation(gen, out);
+		  });
+
+	with_file("hits_vs_levels.dat",
+		  [gen](ostream &out) {
+			  hits_vs_levels(gen, out);
+		  });
+
+	with_file("hits_vs_adjustments.dat",
+		  [gen](ostream &out) {
+			  hits_vs_adjustments(gen, out);
+		  });
+
+
+	with_file("compare_nr_levels.dat",
+		  [gen](ostream &out) {
+			  compare_nr_levels(gen, 10, out);
+		  });
 	return 0;
 }
 
 //----------------------------------------------------------------
+
