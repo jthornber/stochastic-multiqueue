@@ -266,13 +266,6 @@ namespace {
 			out << "\n";
 		}
 	}
-
-
-	template <typename Fn>
-	void with_file(string const &path, Fn f) {
-		ofstream out(path);
-		f(out);
-	}
 }
 
 //----------------------------------------------------------------

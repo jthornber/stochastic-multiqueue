@@ -1,4 +1,5 @@
 PROGRAMS:=\
+	generate_cache_data \
         generate_multiqueue_data
 
 .PHONY: all
@@ -15,7 +16,6 @@ DATADIR:=$(DESTDIR)$(PREFIX)/share
 MANPATH:=$(DATADIR)/man
 
 SOURCE:=\
-	generate_multiqueue_data.cc \
 	multiqueue.cc \
 	sampler.cc
 
@@ -44,5 +44,8 @@ clean:
 	find . -name \*.d -delete
 	$(RM) $(PROGRAMS) lib/*.a
 
-generate_multiqueue_data: $(OBJECTS)
+generate_cache_data: $(OBJECTS) generate_cache_data.o
+	g++ $(CXXFLAGS) -O8 $+ -o $@ $(LIBS)
+
+generate_multiqueue_data: $(OBJECTS) generate_multiqueue_data.o
 	g++ $(CXXFLAGS) -O8 $+ -o $@ $(LIBS)

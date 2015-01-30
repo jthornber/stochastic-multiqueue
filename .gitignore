@@ -2,4 +2,6 @@
 *.o
 *.d
 *.dat
+generate_cache_data
 generate_multiqueue_data
+
