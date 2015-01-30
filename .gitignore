@@ -2,6 +2,7 @@
 *.o
 *.d
 *.dat
+*.pdf
 generate_cache_data
 generate_multiqueue_data
 

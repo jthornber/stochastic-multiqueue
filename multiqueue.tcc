@@ -94,54 +94,55 @@ queue_level<Block>::splice_back(queue_level &l)
 //--------------------------------
 
 template <typename Block>
-multiqueue<Block>::multiqueue(unsigned nr_blocks, unsigned nr_levels)
-	: blocks_(nr_blocks),
-	  levels_(nr_levels),
-	  hits_(0),
-	  misses_(0)
+multiqueue_base<Block>::multiqueue_base(unsigned nr_levels)
+	: levels_(nr_levels),
+	  nr_blocks_(0),
+	  autotune_hits_(0),
+	  autotune_misses_(0)
 {
-	for (auto &b : blocks_)
-		levels_[0].push_back(b);
+}
+
+template <typename Block>
+void
+multiqueue_base<Block>::insert_block(Block &b)
+{
+	nr_blocks_++;
+	levels_[0].push_back(b);
+}
+
+template <typename Block>
+void
+multiqueue_base<Block>::remove_block(Block &b)
+{
+	// FIXME: annotate block with a level_
+	levels_[b.level_].erase(b);
 }
 
 template <typename Block>
 bool
-multiqueue<Block>::in_cache(Block const &b)
+multiqueue_base<Block>::in_cache(Block const &b)
 {
 	return (b.level_ > (levels_.size() / 8) * 7);
 }
 
 template <typename Block>
 void
-multiqueue<Block>::hit(unsigned bindex)
+multiqueue_base<Block>::hit(Block &b)
 {
-	if (bindex < blocks_.size()) {
-		Block &b = blocks_[bindex];
-		queue_level<Block> &l = levels_[b.level_];
+	queue_level<Block> &l = levels_[b.level_];
 
-		b.hit_count_++;
+	if (in_cache(b))
+		autotune_hits_++;
+	else
+		autotune_misses_++;
 
-		if (in_cache(b))
-			hits_++;
-		else
-			misses_++;
-
-		l.erase(b);
-		l.push_back(b);
-	}
-}
-
-template <typename Block>
-void
-multiqueue<Block>::clear_hits()
-{
-	for (auto & b : blocks_)
-		b.hit_count_ = 0;
+	l.erase(b);
+	l.push_back(b);
 }
 
 template <typename Block>
 vector<unsigned>
-multiqueue<Block>::level_populations() const
+multiqueue_base<Block>::level_populations() const
 {
 	vector<unsigned> r(levels_.size());
 	for (unsigned i = 0; i < levels_.size(); i++)
@@ -150,57 +151,11 @@ multiqueue<Block>::level_populations() const
 }
 
 template <typename Block>
-typename multiqueue<Block>::hit_analysis
-multiqueue<Block>::get_hit_analysis(unsigned top_percent) const
-{
-	hit_analysis r;
-	r.top_percent_ = top_percent;
-	r.hits_in_levels_ = 0;
-	r.hits_actual_ = 0;
-
-	unsigned target = (blocks_.size() * top_percent) / 100u;
-
-	for (unsigned level = levels_.size(); level; --level) {
-		queue_level<Block> const &l = levels_[level - 1];
-
-		for (auto it = l.list_.rbegin(); target > 0 && it != l.list_.rend(); ++it, --target)
-			r.hits_in_levels_ += it->hit_count_;
-	}
-
-	std::vector<Block const *> sorted(blocks_.size());
-	for (unsigned i = 0; i < blocks_.size(); i++)
-		sorted[i] = &blocks_[i];
-	sort(sorted.begin(), sorted.end(), cmp_block_high_to_low);
-
-	target = (blocks_.size() * top_percent) / 100u;
-	for (unsigned i = 0; i < target; i++)
-		r.hits_actual_ += sorted[i]->hit_count_;
-
-	return r;
-}
-
-template <typename Block>
-std::vector<unsigned>
-multiqueue<Block>::get_hits() const
-{
-	vector<unsigned> r(blocks_.size());
-
-	auto index = 0u;
-	for (auto const &l : levels_) {
-		for (auto it = l.list_.cbegin(); it != l.list_.cend(); ++it)
-			r[index++] = it->hit_count_;
-	}
-
-	return r;
-}
-
-template <typename Block>
 void
-multiqueue<Block>::shuffle(unsigned adjustment)
+multiqueue_base<Block>::shuffle(unsigned adjustment)
 {
-	unsigned nr_blocks = blocks_.size();
 	unsigned nr_levels = levels_.size();
-	unsigned target_per_level = nr_blocks / nr_levels;
+	unsigned target_per_level = nr_blocks_ / nr_levels;
 
 	// Promote a few blocks
 	queue_level<Block> promotes[nr_levels], demotes[nr_levels];
@@ -253,18 +208,18 @@ multiqueue<Block>::shuffle(unsigned adjustment)
 		levels_[level].splice_back(demotes[level]);
 	}
 
-	hits_ = 0;
-	misses_ = 0;
+	autotune_hits_ = 0;
+	autotune_misses_ = 0;
 }
 
 template <typename Block>
 unsigned
-multiqueue<Block>::get_autotune_adjustment() const
+multiqueue_base<Block>::get_autotune_adjustment() const
 {
-	unsigned max_adjustment = (blocks_.size() / levels_.size()) / 4;
+	unsigned max_adjustment = (nr_blocks_ / levels_.size()) / 4;
 
-	auto miss_ratio = static_cast<double>(misses_) /
-		static_cast<double>(hits_);
+	auto miss_ratio = static_cast<double>(autotune_misses_) /
+		static_cast<double>(autotune_hits_);
 
 	// I'm assuming hits per generation ~= nr_blocks
 	miss_ratio = ((miss_ratio - 1.0) * 4.0) + 1.0;
@@ -275,9 +230,91 @@ multiqueue<Block>::get_autotune_adjustment() const
 
 template <typename Block>
 void
-multiqueue<Block>::shuffle_with_autotune()
+multiqueue_base<Block>::shuffle_with_autotune()
 {
 	shuffle(get_autotune_adjustment());
+}
+
+//--------------------------------
+
+template <typename Block>
+multiqueue<Block>::multiqueue(unsigned nr_blocks, unsigned nr_levels)
+	: multiqueue_base<Block>(nr_levels),
+	  blocks_(nr_blocks)
+{
+	for (auto &b : blocks_)
+		multiqueue_base<Block>::insert_block(b);
+}
+
+template <typename Block>
+multiqueue<Block>::~multiqueue()
+{
+	for (auto &b : blocks_)
+		multiqueue_base<Block>::remove_block(b);
+}
+
+template <typename Block>
+void
+multiqueue<Block>::hit(unsigned bindex)
+{
+	if (bindex < blocks_.size()) {
+		Block &b = blocks_[bindex];
+		multiqueue_base<Block>::hit(b);
+		b.hit_count_++;
+	}
+}
+
+template <typename Block>
+void
+multiqueue<Block>::clear_hits()
+{
+	for (auto & b : blocks_)
+		b.hit_count_ = 0;
+}
+
+template <typename Block>
+typename multiqueue<Block>::hit_analysis
+multiqueue<Block>::get_hit_analysis(unsigned top_percent) const
+{
+	hit_analysis r;
+	r.top_percent_ = top_percent;
+	r.hits_in_levels_ = 0;
+	r.hits_actual_ = 0;
+
+	unsigned target = (blocks_.size() * top_percent) / 100u;
+
+	for (unsigned level = multiqueue_base<Block>::levels_.size(); level; --level) {
+		queue_level<Block> const &l = multiqueue_base<Block>::levels_[level - 1];
+
+		for (auto it = l.list_.rbegin(); target > 0 && it != l.list_.rend(); ++it, --target)
+			r.hits_in_levels_ += it->hit_count_;
+	}
+
+	std::vector<Block const *> sorted(blocks_.size());
+	for (unsigned i = 0; i < blocks_.size(); i++)
+		sorted[i] = &blocks_[i];
+	sort(sorted.begin(), sorted.end(), cmp_block_high_to_low);
+
+	target = (blocks_.size() * top_percent) / 100u;
+	for (unsigned i = 0; i < target; i++)
+		r.hits_actual_ += sorted[i]->hit_count_;
+
+	return r;
+}
+
+template <typename Block>
+std::vector<unsigned>
+multiqueue<Block>::get_hits() const
+{
+	vector<unsigned> r(blocks_.size());
+
+	auto index = 0u;
+	for (auto const &l : multiqueue_base<Block>::levels_) {
+		for (auto it = l.list_.cbegin(); it != l.list_.cend(); ++it)
+			r[index++] = it->hit_count_;
+	}
+
+	return r;
 }
 
 template <typename Block>

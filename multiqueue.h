@@ -38,14 +38,39 @@ namespace smq {
 	};
 
 	template <typename Block>
-	class multiqueue {
+	class multiqueue_base {
+	public:
+		multiqueue_base(unsigned nr_levels);
+
+		void insert_block(Block &b);
+		void remove_block(Block &b);
+		void hit(Block &b);
+		std::vector<unsigned> level_populations() const;
+
+		void shuffle(unsigned adjustment = 1);
+		unsigned get_autotune_adjustment() const;
+		void shuffle_with_autotune();
+
+		// FIXME: make private
+		std::vector<queue_level<Block>> levels_;
+
+	private:
+		bool in_cache(Block const &b); // FIXME: rename or remove
+
+		unsigned nr_blocks_;
+		unsigned autotune_hits_;
+		unsigned autotune_misses_;
+	};
+
+
+	template <typename Block>
+	class multiqueue : public multiqueue_base<Block> {
 	public:
 		multiqueue(unsigned nr_blocks, unsigned nr_levels);
+		~multiqueue();
 
-		bool in_cache(Block const &b); // FIXME: rename or remove
 		void hit(unsigned bindex);
 		void clear_hits();
-		std::vector<unsigned> level_populations() const;
 
 		struct hit_analysis {
 			unsigned top_percent_;
@@ -55,17 +80,11 @@ namespace smq {
 
 		hit_analysis get_hit_analysis(unsigned top_percent) const;
 		std::vector<unsigned> get_hits() const;
-		void shuffle(unsigned adjustment = 1);
-		unsigned get_autotune_adjustment() const;
-		void shuffle_with_autotune();
 
 	private:
 		static bool cmp_block_high_to_low(Block const *lhs, Block const *rhs);
 
 		std::vector<Block> blocks_;
-		std::vector<queue_level<Block>> levels_;
-		unsigned hits_;
-		unsigned misses_;
 	};
 }
 

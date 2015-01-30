@@ -27,12 +27,14 @@ OBJECTS:=$(subst .cc,.o,$(SOURCE))
 	$(V) $(CXX) -c $(INCLUDES) $(CXXFLAGS) -o $@ $<
 	@echo "	   [DEP] $<"
 	$(V) $(CXX) -MM -MT $(subst .cc,.o,$<) $(INCLUDES) $(TEST_INCLUDES) $(CXXFLAGS) $< > $*.$$$$; \
-	sed 's,\([^ :]*\)\.o[ :]*,\1.o \1.gmo : Makefile ,g' < $*.$$$$ > $*.d; \
+	sed 's,\([^ :]*\)\.o[ :]*,\1.o : Makefile ,g' < $*.$$$$ > $*.d; \
 	$(RM) $*.$$$$
 
 
 DEPEND_FILES=\
-	$(subst .cc,.d,$(SOURCE))
+	$(subst .cc,.d,$(SOURCE)) \
+	generate_cache_data.d \
+	generate_multiqueue_data.d
 
 -include $(DEPEND_FILES)
 
@@ -48,3 +50,20 @@ generate_cache_data: $(OBJECTS) generate_cache_data.o
 
 generate_multiqueue_data: $(OBJECTS) generate_multiqueue_data.o
 	g++ $(CXXFLAGS) -O8 $+ -o $@ $(LIBS)
+
+MULTIQUEUE_DATA_FILES=\
+	ha_vs_levels.dat \
+	ha_with_changing_pdf_vs_adjustments.dat \
+	level_population.dat \
+	ha_vs_percent.dat \
+	hits_vs_adjustments.dat \
+	pdf.dat \
+	ha_with_changing_pdf_and_autotune.dat \
+	hits_vs_levels.dat \
+	summation_table.dat
+
+$(MULTIQUEUE_DATA_FILES): generate_multiqueue_data
+	./generate_multiqueue_data
+
+graphs: $(PROGRAMS) $(MULTIQUEUE_DATA_FILES)
+	R --no-save < draw_graphs.R
