@@ -1,86 +1,90 @@
 #include "multiqueue.h"
 
+// FIXME: we can't have these in a header
 using namespace smq;
 using namespace std;
 
 //----------------------------------------------------------------
 
-block::block()
-	: level_(0),
-	  hit_count_(0)
-{
-}
-
-//--------------------------------
-
-queue_level::queue_level()
+template <typename Block>
+queue_level<Block>::queue_level()
 	: count_(0)
 {
 }
 
+template <typename Block>
 bool
-queue_level::empty() const
+queue_level<Block>::empty() const
 {
 	return list_.empty();
 }
 
-block &
-queue_level::front()
+template <typename Block>
+Block &
+queue_level<Block>::front()
 {
 	return list_.front();
 }
 
-block &
-queue_level::back()
+template <typename Block>
+Block &
+queue_level<Block>::back()
 {
 	return list_.back();
 }
 
+template <typename Block>
 void
-queue_level::push_back(block &b)
+queue_level<Block>::push_back(Block &b)
 {
 	list_.push_back(b);
 	count_++;
 }
 
+template <typename Block>
 void
-queue_level::push_front(block &b)
+queue_level<Block>::push_front(Block &b)
 {
 	list_.push_front(b);
 	count_++;
 }
 
+template <typename Block>
 void
-queue_level::pop_back()
+queue_level<Block>::pop_back()
 {
 	list_.pop_back();
 	count_--;
 }
 
+template <typename Block>
 void
-queue_level::pop_front()
+queue_level<Block>::pop_front()
 {
 	list_.pop_front();
 	count_--;
 }
 
+template <typename Block>
 void
-queue_level::erase(block &b)
+queue_level<Block>::erase(Block &b)
 {
 	list_.erase(list_.iterator_to(b));
 	count_--;
 }
 
+template <typename Block>
 void
-queue_level::splice_front(queue_level &l)
+queue_level<Block>::splice_front(queue_level &l)
 {
 	list_.splice(list_.begin(), l.list_);
 	count_ += l.count_;
 	l.count_ = 0;
 }
 
+template <typename Block>
 void
-queue_level::splice_back(queue_level &l)
+queue_level<Block>::splice_back(queue_level &l)
 {
 	list_.splice(list_.end(), l.list_);
 	count_ += l.count_;
@@ -89,7 +93,8 @@ queue_level::splice_back(queue_level &l)
 
 //--------------------------------
 
-multiqueue::multiqueue(unsigned nr_blocks, unsigned nr_levels)
+template <typename Block>
+multiqueue<Block>::multiqueue(unsigned nr_blocks, unsigned nr_levels)
 	: blocks_(nr_blocks),
 	  levels_(nr_levels),
 	  hits_(0),
@@ -99,18 +104,20 @@ multiqueue::multiqueue(unsigned nr_blocks, unsigned nr_levels)
 		levels_[0].push_back(b);
 }
 
+template <typename Block>
 bool
-multiqueue::in_cache(block const &b)
+multiqueue<Block>::in_cache(Block const &b)
 {
 	return (b.level_ > (levels_.size() / 8) * 7);
 }
 
+template <typename Block>
 void
-multiqueue::hit(unsigned bindex)
+multiqueue<Block>::hit(unsigned bindex)
 {
 	if (bindex < blocks_.size()) {
-		block &b = blocks_[bindex];
-		queue_level &l = levels_[b.level_];
+		Block &b = blocks_[bindex];
+		queue_level<Block> &l = levels_[b.level_];
 
 		b.hit_count_++;
 
@@ -124,15 +131,17 @@ multiqueue::hit(unsigned bindex)
 	}
 }
 
+template <typename Block>
 void
-multiqueue::clear_hits()
+multiqueue<Block>::clear_hits()
 {
 	for (auto & b : blocks_)
 		b.hit_count_ = 0;
 }
 
+template <typename Block>
 vector<unsigned>
-multiqueue::level_populations() const
+multiqueue<Block>::level_populations() const
 {
 	vector<unsigned> r(levels_.size());
 	for (unsigned i = 0; i < levels_.size(); i++)
@@ -140,8 +149,9 @@ multiqueue::level_populations() const
 	return r;
 }
 
-multiqueue::hit_analysis
-multiqueue::get_hit_analysis(unsigned top_percent) const
+template <typename Block>
+typename multiqueue<Block>::hit_analysis
+multiqueue<Block>::get_hit_analysis(unsigned top_percent) const
 {
 	hit_analysis r;
 	r.top_percent_ = top_percent;
@@ -151,13 +161,13 @@ multiqueue::get_hit_analysis(unsigned top_percent) const
 	unsigned target = (blocks_.size() * top_percent) / 100u;
 
 	for (unsigned level = levels_.size(); level; --level) {
-		queue_level const &l = levels_[level - 1];
+		queue_level<Block> const &l = levels_[level - 1];
 
 		for (auto it = l.list_.rbegin(); target > 0 && it != l.list_.rend(); ++it, --target)
 			r.hits_in_levels_ += it->hit_count_;
 	}
 
-	vector<block const *> sorted(blocks_.size());
+	std::vector<Block const *> sorted(blocks_.size());
 	for (unsigned i = 0; i < blocks_.size(); i++)
 		sorted[i] = &blocks_[i];
 	sort(sorted.begin(), sorted.end(), cmp_block_high_to_low);
@@ -169,8 +179,9 @@ multiqueue::get_hit_analysis(unsigned top_percent) const
 	return r;
 }
 
-vector<unsigned>
-multiqueue::get_hits() const
+template <typename Block>
+std::vector<unsigned>
+multiqueue<Block>::get_hits() const
 {
 	vector<unsigned> r(blocks_.size());
 
@@ -183,18 +194,19 @@ multiqueue::get_hits() const
 	return r;
 }
 
+template <typename Block>
 void
-multiqueue::shuffle(unsigned adjustment)
+multiqueue<Block>::shuffle(unsigned adjustment)
 {
 	unsigned nr_blocks = blocks_.size();
 	unsigned nr_levels = levels_.size();
 	unsigned target_per_level = nr_blocks / nr_levels;
 
 	// Promote a few blocks
-	queue_level promotes[nr_levels], demotes[nr_levels];
+	queue_level<Block> promotes[nr_levels], demotes[nr_levels];
 
 	for (unsigned level = 0; level < nr_levels; level++) {
-		queue_level &l = levels_[level];
+		queue_level<Block> &l = levels_[level];
 
 		unsigned target = 0;
 		if (l.count_ > target_per_level + 4)
@@ -210,7 +222,7 @@ multiqueue::shuffle(unsigned adjustment)
 			auto new_level = min(level + jump, nr_levels - 1);
 
 			for (unsigned count = 0; count < target && !l.empty(); count++) {
-				block &b = l.back();
+				Block &b = l.back();
 				l.pop_back();
 
 				b.level_ = new_level;
@@ -227,7 +239,7 @@ multiqueue::shuffle(unsigned adjustment)
 			int new_level = jump > level ? 0 : level - jump;
 
 			for (unsigned count = 0; count < target && !l.empty(); count++) {
-				block &b = l.front();
+				Block &b = l.front();
 				l.pop_front();
 
 				b.level_ = new_level;
@@ -245,8 +257,9 @@ multiqueue::shuffle(unsigned adjustment)
 	misses_ = 0;
 }
 
+template <typename Block>
 unsigned
-multiqueue::get_autotune_adjustment() const
+multiqueue<Block>::get_autotune_adjustment() const
 {
 	unsigned max_adjustment = (blocks_.size() / levels_.size()) / 4;
 
@@ -260,14 +273,16 @@ multiqueue::get_autotune_adjustment() const
 	return floor(miss_ratio);
 }
 
+template <typename Block>
 void
-multiqueue::shuffle_with_autotune()
+multiqueue<Block>::shuffle_with_autotune()
 {
 	shuffle(get_autotune_adjustment());
 }
 
+template <typename Block>
 bool
-multiqueue::cmp_block_high_to_low(block const *lhs, block const *rhs)
+multiqueue<Block>::cmp_block_high_to_low(Block const *lhs, Block const *rhs)
 {
 	return lhs->hit_count_ > rhs->hit_count_;
 }

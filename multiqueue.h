@@ -9,45 +9,40 @@
 namespace smq {
 	namespace bi = boost::intrusive;
 
-	struct block {
-		block();
-
-		boost::intrusive::list_member_hook<> member_hook_;
-		unsigned level_;
-		unsigned hit_count_;
-	};
-
-	typedef bi::list<block,
-			 bi::member_hook<block,
-					 bi::list_member_hook<>,
-					 &block::member_hook_>
-			 > block_list;
-
+	template <typename Block>
 	class queue_level {
 	public:
 		queue_level();
 
 		bool empty() const;
-		block &front();
-		block &back();
-		void push_back(block &b);
-		void push_front(block &b);
+		Block &front();
+		Block &back();
+		void push_back(Block &b);
+		void push_front(Block &b);
 		void pop_back();
 		void pop_front();
-		void erase(block &b);
+		void erase(Block &b);
 		void splice_front(queue_level &l);
 		void splice_back(queue_level &l);
 
 		// FIXME: make private
 		unsigned count_;
+
+		using block_list = bi::list<Block,
+					    bi::member_hook<Block,
+							    bi::list_member_hook<>,
+							    &Block::member_hook_>
+					    >;
+
 		block_list list_;
 	};
 
+	template <typename Block>
 	class multiqueue {
 	public:
 		multiqueue(unsigned nr_blocks, unsigned nr_levels);
 
-		bool in_cache(block const &b);
+		bool in_cache(Block const &b); // FIXME: rename or remove
 		void hit(unsigned bindex);
 		void clear_hits();
 		std::vector<unsigned> level_populations() const;
@@ -65,14 +60,16 @@ namespace smq {
 		void shuffle_with_autotune();
 
 	private:
-		static bool cmp_block_high_to_low(block const *lhs, block const *rhs);
+		static bool cmp_block_high_to_low(Block const *lhs, Block const *rhs);
 
-		std::vector<block> blocks_;
-		std::vector<queue_level> levels_;
+		std::vector<Block> blocks_;
+		std::vector<queue_level<Block>> levels_;
 		unsigned hits_;
 		unsigned misses_;
 	};
 }
+
+#include "multiqueue.tcc"
 
 //----------------------------------------------------------------
 

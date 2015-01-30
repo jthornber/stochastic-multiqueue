@@ -15,6 +15,21 @@ using namespace smq;
 //----------------------------------------------------------------
 
 namespace {
+	struct block {
+		block()
+			: level_(0),
+			  hit_count_(0) {
+		}
+
+		boost::intrusive::list_member_hook<> member_hook_;
+		unsigned level_;
+		unsigned hit_count_;
+	};
+
+	using mqb = multiqueue<block>;
+
+	//--------------------------------
+
 	template <typename Generator1, typename Generator2>
 	void show_pdf(Generator1 const &gen1, Generator2 const &gen2, ostream &out) {
 		sampler s1(8192, gen1);
@@ -41,7 +56,7 @@ namespace {
 		unsigned const HITS_PER_GENERATION = 10000;
 
 		sampler s(NR_BLOCKS, gen);
-		multiqueue mq(NR_BLOCKS, 64);
+		mqb mq(NR_BLOCKS, 64);
 
 		for (unsigned generation = 0; generation < NR_GENERATIONS; generation++) {
 			for (unsigned hit = 0; hit < HITS_PER_GENERATION; hit++)
@@ -65,10 +80,10 @@ namespace {
 		unsigned const HITS_PER_GENERATION = 10000;
 
 		sampler s(NR_BLOCKS, gen);
-		list<unique_ptr<multiqueue>> mqs;
+		list<unique_ptr<mqb>> mqs;
 
 		for (unsigned i = 0; i < 8; i++)
-			mqs.push_back(make_unique<multiqueue>(NR_BLOCKS, 1 << i));
+			mqs.push_back(make_unique<mqb>(NR_BLOCKS, 1 << i));
 
 		for (unsigned generation = 0; generation < NR_GENERATIONS; generation++) {
 
@@ -103,7 +118,7 @@ namespace {
 		unsigned const HITS_PER_GENERATION = 10000;
 
 		sampler s(NR_BLOCKS, gen);
-		multiqueue mq(NR_BLOCKS, 64);
+		mqb mq(NR_BLOCKS, 64);
 
 		for (unsigned generation = 0; generation < NR_GENERATIONS; generation++) {
 			for (unsigned hit = 0; hit < HITS_PER_GENERATION; hit++)
@@ -128,9 +143,9 @@ namespace {
 		sampler s1(NR_BLOCKS, gen1);
 		sampler s2(NR_BLOCKS, gen2);
 
-		list<unique_ptr<multiqueue>> mqs;
+		list<unique_ptr<mqb>> mqs;
 		for (unsigned i = 0; i < 6; i++)
-			mqs.push_back(make_unique<multiqueue>(NR_BLOCKS, 64));
+			mqs.push_back(make_unique<mqb>(NR_BLOCKS, 64));
 
 		for (unsigned generation = 0; generation < NR_GENERATIONS * 100; generation++) {
 			auto &cs = ((generation / NR_GENERATIONS) & 1) ? s1 : s2;
@@ -166,7 +181,7 @@ namespace {
 
 		sampler s1(NR_BLOCKS, gen1);
 		sampler s2(NR_BLOCKS, gen2);
-		multiqueue mq(NR_BLOCKS, 64);
+		mqb mq(NR_BLOCKS, 64);
 
 		for (unsigned generation = 0; generation < NR_GENERATIONS * 6; generation++) {
 			auto &cs = ((generation / NR_GENERATIONS) & 1) ? s1 : s2;
@@ -198,10 +213,10 @@ namespace {
 		unsigned const HITS_PER_GENERATION = 10000;
 
 		sampler s(NR_BLOCKS, gen);
-		list<unique_ptr<multiqueue>> mqs;
+		list<unique_ptr<mqb>> mqs;
 
 		for (unsigned i = 0; i < 8; i++)
-			mqs.push_back(make_unique<multiqueue>(NR_BLOCKS, 1 << i));
+			mqs.push_back(make_unique<mqb>(NR_BLOCKS, 1 << i));
 
 		for (unsigned generation = 0; generation < NR_GENERATIONS; generation++) {
 			for (unsigned hit = 0; hit < HITS_PER_GENERATION; hit++) {
@@ -234,10 +249,10 @@ namespace {
 		unsigned const HITS_PER_GENERATION = 10000;
 
 		sampler s(NR_BLOCKS, gen);
-		list<unique_ptr<multiqueue>> mqs;
+		list<unique_ptr<mqb>> mqs;
 
 		for (unsigned i = 0; i < 4; i++)
-			mqs.push_back(make_unique<multiqueue>(NR_BLOCKS, 64));
+			mqs.push_back(make_unique<mqb>(NR_BLOCKS, 64));
 
 		for (unsigned generation = 0; generation < NR_GENERATIONS; generation++) {
 			for (unsigned hit = 0; hit < HITS_PER_GENERATION; hit++) {

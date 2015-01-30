@@ -16,7 +16,6 @@ DATADIR:=$(DESTDIR)$(PREFIX)/share
 MANPATH:=$(DATADIR)/man
 
 SOURCE:=\
-	multiqueue.cc \
 	sampler.cc
 
 OBJECTS:=$(subst .cc,.o,$(SOURCE))
