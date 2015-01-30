@@ -1,6 +1,5 @@
 *~
 *.o
-smq
 *.d
 *.dat
-results.out
+generate_multiqueue_data

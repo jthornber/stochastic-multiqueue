@@ -1,5 +1,5 @@
 PROGRAMS:=\
-        smq
+        generate_multiqueue_data
 
 .PHONY: all
 all: $(PROGRAMS)
@@ -15,7 +15,9 @@ DATADIR:=$(DESTDIR)$(PREFIX)/share
 MANPATH:=$(DATADIR)/man
 
 SOURCE:=\
-	main.cc
+	generate_multiqueue_data.cc \
+	multiqueue.cc \
+	sampler.cc
 
 OBJECTS:=$(subst .cc,.o,$(SOURCE))
 
@@ -42,5 +44,5 @@ clean:
 	find . -name \*.d -delete
 	$(RM) $(PROGRAMS) lib/*.a
 
-smq: $(OBJECTS)
+generate_multiqueue_data: $(OBJECTS)
 	g++ $(CXXFLAGS) -O8 $+ -o $@ $(LIBS)
